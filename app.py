@@ -1,7 +1,6 @@
 import streamlit as st
 import edge_tts
 import asyncio
-import os
 from datetime import datetime
 
 # --- 페이지 설정 ---
@@ -48,7 +47,6 @@ def get_voices():
 def main():
     st.title("AI 성우 녹음기 (Web)")
     
-    # 사이드바 설정
     with st.sidebar:
         st.header("설정 (Settings)")
         voice_list, voice_map = get_voices()
@@ -64,13 +62,12 @@ def main():
         # 감정 선택
         styles = ["general (기본)", "cheerful (명랑)", "sad (슬픔)", "angry (화남)", "terrified (겁먹음)", "shouting (외침)", "whispering (속삭임)", "friendly (친근)", "excited (신남)"]
         selected_style_raw = st.selectbox("감정/스타일", styles)
-        selected_style = selected_style_raw.split(' ')[0] # 영어 부분만 추출
+        selected_style = selected_style_raw.split(' ')[0]
 
         speed = st.slider("말하기 속도", -50, 50, 0, format="%d%%")
         pitch = st.slider("목소리 톤", -50, 50, 0, format="%dHz")
 
-    # 텍스트 입력
-    text_input = st.text_area("텍스트 입력", height=150, placeholder="Hello! I am angry!")
+    text_input = st.text_area("텍스트 입력", height=150, placeholder="Get out of here right now!")
 
     if st.button("🔊 오디오 생성하기", type="primary", use_container_width=True):
         if not text_input.strip():
@@ -78,53 +75,38 @@ def main():
             return
 
         with st.spinner("오디오 생성 중..."):
-            rate_str = f"{'+' if speed >= 0 else ''}{speed}%"
-            pitch_str = f"{'+' if pitch >= 0 else ''}{pitch}Hz"
             timestamp = datetime.now().strftime("%H%M%S")
             filename = f"audio_{timestamp}.mp3"
             
+            # 속도/톤 문자열 변환
+            rate_str = f"{'+' if speed >= 0 else ''}{speed}%"
+            pitch_str = f"{'+' if pitch >= 0 else ''}{pitch}Hz"
+
             async def gen():
-                # [핵심] 일반 모드와 감정 모드를 완전히 분리하여 처리
+                # [수정된 핵심 로직]
                 if selected_style == "general":
-                    # 일반 모드: 그냥 텍스트로 전송
+                    # 1. 일반 모드: 라이브러리에게 속도/톤 처리를 맡김 (가장 안전)
                     communicate = edge_tts.Communicate(text_input, selected_id, rate=rate_str, pitch=pitch_str)
                     await communicate.save(filename)
                 else:
-                    # 감정 모드: SSML 생성 (엔터키 없이 한 줄로 작성하여 오류 방지)
+                    # 2. 감정 모드: 우리가 직접 SSML을 짬 -> 라이브러리 간섭 차단
                     # 특수문자 처리 (<, >, &)
                     safe_text = text_input.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
                     
-                    ssml_string = (
-                        f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='en-US'>"
-                        f"<voice name='{selected_id}'>"
-                        f"<mstts:express-as style='{selected_style}'>"
-                        f"<prosody rate='{rate_str}' pitch='{pitch_str}'>"
-                        f"{safe_text}"
-                        f"</prosody>"
-                        f"</mstts:express-as>"
-                        f"</voice>"
-                        f"</speak>"
-                    )
+                    # 엔터키 없이 한 줄로 쭉 이어진 SSML 코드
+                    ssml_code = f"<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='en-US'><voice name='{selected_id}'><mstts:express-as style='{selected_style}'><prosody rate='{rate_str}' pitch='{pitch_str}'>{safe_text}</prosody></mstts:express-as></voice></speak>"
                     
-                    # SSML을 사용할 때는 rate/pitch 매개변수를 제거해야 이중으로 포장되지 않습니다.
-                    communicate = edge_tts.Communicate(ssml_string, selected_id)
+                    # [중요] rate와 pitch 인자를 아예 안 넣어야(None) 이중 포장이 안 됩니다!
+                    communicate = edge_tts.Communicate(ssml_code, selected_id)
                     await communicate.save(filename)
 
             try:
                 run_async(gen())
-                
-                # 결과 출력 및 다운로드
                 st.audio(filename)
                 with open(filename, "rb") as f:
-                    st.download_button(
-                        label="MP3 다운로드",
-                        data=f,
-                        file_name=filename,
-                        mime="audio/mp3",
-                        use_container_width=True
-                    )
+                    st.download_button(label="MP3 다운로드", data=f, file_name=filename, mime="audio/mp3", use_container_width=True)
             except Exception as e:
-                st.error(f"오류 발생: {e}")
+                st.error(f"오류: {e}")
 
 if __name__ == "__main__":
     main()
