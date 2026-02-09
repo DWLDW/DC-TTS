@@ -10,8 +10,8 @@ st.set_page_config(page_title="ReadingTown AI Voice", page_icon="🎙️")
 # --- 언어별 텍스트 설정 ---
 txt = {
     'ko': {
-        'title': "AI 신경망 음성 생성기 (Web)",
-        'voice_lbl': "목소리 선택",
+        'title': "AI 성우 녹음기 (감정 기능 복구)",
+        'voice_lbl': "목소리 선택 (⭐표시가 연기 천재)",
         'style_lbl': "감정/스타일 (Style)",
         'speed_lbl': "말하기 속도",
         'pitch_lbl': "목소리 톤",
@@ -21,8 +21,8 @@ txt = {
         'err_empty': "텍스트를 입력해주세요!"
     },
     'en': {
-        'title': "AI Neural Voice Generator (Web)",
-        'voice_lbl': "Select Voice",
+        'title': "AI Neural Voice Generator (Emotion Fixed)",
+        'voice_lbl': "Select Voice (⭐ = Expressive)",
         'style_lbl': "Emotion/Style",
         'speed_lbl': "Speech Rate",
         'pitch_lbl': "Voice Pitch",
@@ -32,8 +32,8 @@ txt = {
         'err_empty': "Please enter text!"
     },
     'zh': {
-        'title': "AI 神经网络语音生成器 (Web)",
-        'voice_lbl': "选择语音",
+        'title': "AI 神经网络语音生成器 (情感修复版)",
+        'voice_lbl': "选择语音 (⭐ = 情感丰富)",
         'style_lbl': "情感/风格",
         'speed_lbl': "语速",
         'pitch_lbl': "音调",
@@ -74,7 +74,8 @@ def get_voices():
         gender = "여" if v['Gender'] == "Female" else "남"
         clean_name = short_name.split('-')[-1].replace('Neural', '')
         
-        # 감정 표현 가능 여부 체크
+        # 감정 표현 가능 여부 체크 (중요!)
+        # Aria, Jenny, Guy, Xiaoxiao가 감정을 잘 살립니다.
         star = "⭐" if clean_name in ["Aria", "Jenny", "Guy", "Xiaoxiao"] else ""
         
         display_name = f"{flag} {tag} {clean_name} ({gender}) {star}"
@@ -99,16 +100,17 @@ def main():
         
         voice_list, voice_map = get_voices()
         
-        # 기본값 (SunHi)
+        # 기본값 (Aria - 감정 표현이 좋음)
         default_idx = 0
         for i, v in enumerate(voice_list):
-            if "SunHi" in v: default_idx = i; break
+            if "Aria" in v: default_idx = i; break
             
         selected_display = st.selectbox(t['voice_lbl'], voice_list, index=default_idx)
         selected_id = voice_map[selected_display]
         
-        # 감정 스타일 선택 (스타일 지원하는 목소리만)
-        styles = ["general", "cheerful", "sad", "angry", "terrified", "shouting", "whispering", "friendly"]
+        # 감정 스타일 선택
+        # (한국어 성우들은 대부분 general만 지원합니다. 영어/중국어 성우용입니다.)
+        styles = ["general", "cheerful", "sad", "angry", "terrified", "shouting", "whispering", "friendly", "excited"]
         selected_style = st.selectbox(t['style_lbl'], styles)
 
         speed = st.slider(t['speed_lbl'], -50, 50, 0, format="%d%%")
@@ -116,14 +118,14 @@ def main():
 
     # 메인 화면
     st.title(t['title'])
-    text_input = st.text_area(t['input_lbl'], height=150)
+    text_input = st.text_area(t['input_lbl'], height=150, placeholder="Hello! I am so happy today!")
 
     if st.button(t['btn_gen'], type="primary", use_container_width=True):
         if not text_input.strip():
             st.error(t['err_empty'])
             return
 
-        with st.spinner("Processing..."):
+        with st.spinner("Generating Audio..."):
             rate_str = f"{'+' if speed >= 0 else ''}{speed}%"
             pitch_str = f"{'+' if pitch >= 0 else ''}{pitch}Hz"
             
@@ -131,34 +133,49 @@ def main():
             timestamp = datetime.now().strftime("%H%M%S")
             filename = f"audio_{timestamp}.mp3"
             
-            # 오디오 생성 로직
+            # 오디오 생성 로직 (SSML 적용)
             async def gen():
-                communicate = edge_tts.Communicate(text_input, selected_id, rate=rate_str, pitch=pitch_str)
-                # 감정 스타일 적용 (단순 텍스트 주입 방식)
-                if selected_style != "general":
-                    # 간단하게 스타일 적용을 시도합니다. (web 버전 호환성 위해 복잡한 ssml 제외)
-                    # 스타일이 안 먹혀도 에러가 안 나도록 communicate 객체 자체 생성
-                    pass 
-                await communicate.save(filename)
+                if selected_style == "general":
+                    # 기본 모드: 그냥 텍스트 전송
+                    communicate = edge_tts.Communicate(text_input, selected_id, rate=rate_str, pitch=pitch_str)
+                    await communicate.save(filename)
+                else:
+                    # 감정 모드: SSML(명령어)을 직접 만들어서 전송
+                    # 마이크로소프트가 알아듣는 포맷으로 포장합니다.
+                    ssml_text = f"""
+                    <speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='http://www.w3.org/2001/mstts' xml:lang='en-US'>
+                        <voice name='{selected_id}'>
+                            <mstts:express-as style='{selected_style}'>
+                                <prosody rate='{rate_str}' pitch='{pitch_str}'>
+                                    {text_input}
+                                </prosody>
+                            </mstts:express-as>
+                        </voice>
+                    </speak>
+                    """
+                    # SSML을 보낼 때는 텍스트 자리에 SSML을 넣고, rate/pitch는 SSML 안에 넣었으니 뺍니다.
+                    communicate = edge_tts.Communicate(ssml_text, selected_id) 
+                    await communicate.save(filename)
 
             # 실행
-            run_async(gen())
-            
-            # 결과 출력
-            st.audio(filename)
-            
-            # 다운로드 버튼
-            with open(filename, "rb") as f:
-                st.download_button(
-                    label=t['download'],
-                    data=f,
-                    file_name=filename,
-                    mime="audio/mp3",
-                    use_container_width=True
-                )
-            
-            # (선택) 서버 용량 관리를 위해 생성 직후 삭제하고 싶다면 아래 주석 해제
-            # os.remove(filename)
+            try:
+                run_async(gen())
+                
+                # 결과 출력
+                st.audio(filename)
+                
+                # 다운로드 버튼
+                with open(filename, "rb") as f:
+                    st.download_button(
+                        label=t['download'],
+                        data=f,
+                        file_name=filename,
+                        mime="audio/mp3",
+                        use_container_width=True
+                    )
+            except Exception as e:
+                st.error(f"Error: {e}")
+                st.warning("⚠️ 이 목소리는 해당 감정을 지원하지 않을 수 있습니다. (Aria, Jenny, Guy, Xiaoxiao 추천)")
 
 if __name__ == "__main__":
     main()
