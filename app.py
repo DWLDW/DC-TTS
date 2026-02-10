@@ -2,12 +2,17 @@ import streamlit as st
 import edge_tts
 import asyncio
 import io
-from datetime import datetime
+import re # 파일명 정리를 위한 도구
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(page_title="Readingtown TTS", page_icon="🎧")
 
-# --- 2. 다국어 UI 사전 ---
+# --- 2. 세션 상태 초기화 (카운터 저장용) ---
+# 브라우저가 켜져 있는 동안 각 이름별로 몇 번째 저장인지 기억합니다.
+if 'file_counters' not in st.session_state:
+    st.session_state.file_counters = {}
+
+# --- 3. 다국어 UI 사전 ---
 txt = {
     'en': {
         'title': "Readingtown TTS (Pro)",
@@ -17,6 +22,7 @@ txt = {
         'speed_label': "Speed",
         'pitch_label': "Pitch",
         'vol_label': "Volume",
+        'prefix_label': "File Name Prefix (e.g., 1a1)",
         'input_label': "Enter Text",
         'btn_label': "🔊 Generate Audio",
         'download_label': "Download MP3",
@@ -31,6 +37,7 @@ txt = {
         'speed_label': "말하기 속도",
         'pitch_label': "목소리 톤 (높낮이)",
         'vol_label': "소리 크기 (볼륨)",
+        'prefix_label': "파일 이름 설정 (예: 1a1)",
         'input_label': "텍스트 입력",
         'btn_label': "🔊 오디오 생성하기",
         'download_label': "MP3 다운로드",
@@ -45,6 +52,7 @@ txt = {
         'speed_label': "语速",
         'pitch_label': "音调",
         'vol_label': "音量",
+        'prefix_label': "文件名设置 (例如: 1a1)",
         'input_label': "输入文本",
         'btn_label': "🔊 生成音频",
         'download_label': "下载 MP3",
@@ -53,7 +61,7 @@ txt = {
     }
 }
 
-# --- 3. 비동기 헬퍼 ---
+# --- 4. 비동기 헬퍼 ---
 def run_async(coro):
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
@@ -62,29 +70,20 @@ def run_async(coro):
     finally:
         loop.close()
 
-# --- 4. 목소리 목록 가져오기 (프리미엄 우선 정렬) ---
+# --- 5. 목소리 목록 가져오기 ---
 @st.cache_data
 def get_voices():
     voices = run_async(edge_tts.list_voices())
-    
-    premium_list = [] # 좋은 목소리 담을 통
-    normal_list = []  # 일반 목소리 담을 통
+    premium_list = []
+    normal_list = []
     voice_map = {}
     
-    # 마이크로소프트 공인 '고성능(Expressive)' 목소리 리스트
-    elite_ids = [
-        "en-US-AriaNeural", 
-        "en-US-GuyNeural", 
-        "en-US-JennyNeural", 
-        "zh-CN-XiaoxiaoNeural",
-        "zh-CN-YunxiNeural"
-    ]
+    elite_ids = ["en-US-AriaNeural", "en-US-GuyNeural", "en-US-JennyNeural", "zh-CN-XiaoxiaoNeural", "zh-CN-YunxiNeural"]
     
     for v in voices:
         short_name = v['ShortName']
         if "Neural" not in short_name: continue
         
-        # 언어 필터링
         if "ko-KR" in short_name: flag, tag = "🇰🇷", "[KR]"
         elif "en-US" in short_name: flag, tag = "🇺🇸", "[US]"
         elif "en-GB" in short_name: flag, tag = "🇬🇧", "[UK]"
@@ -94,7 +93,6 @@ def get_voices():
         gender = "Female" if v['Gender'] == "Female" else "Male"
         clean_name = short_name.split('-')[-1].replace('Neural', '')
         
-        # 프리미엄 여부 확인
         if short_name in elite_ids:
             display_name = f"🌟 [Premium] {flag} {clean_name} ({gender})"
             voice_map[display_name] = short_name
@@ -103,18 +101,22 @@ def get_voices():
             display_name = f"{flag} {tag} {clean_name} ({gender})"
             voice_map[display_name] = short_name
             normal_list.append(display_name)
-        
-    # 정렬: 프리미엄 먼저 가나다순, 그 뒤에 일반형 가나다순
+            
     premium_list.sort()
     normal_list.sort()
-    
     return premium_list + normal_list, voice_map
 
-# --- 5. 메인 앱 로직 ---
+# --- 6. 파일명 정리 함수 ---
+def sanitize_filename(text):
+    # 파일명에 쓸 수 없는 특수문자 제거하고 15글자로 자름
+    clean = re.sub(r'[\\/*?:"<>|]', "", text)
+    clean = " ".join(clean.split()) # 연속된 공백 제거
+    return clean[:15].strip()
+
+# --- 7. 메인 앱 로직 ---
 def main():
     with st.sidebar:
         app_lang_sel = st.selectbox("Language / 언어 / 语言", ["English", "한국어", "中文"])
-        
         if app_lang_sel == "English": lang_code = 'en'
         elif app_lang_sel == "한국어": lang_code = 'ko'
         else: lang_code = 'zh'
@@ -123,8 +125,6 @@ def main():
         st.header(t['sidebar_header'])
         
         voice_list, voice_map = get_voices()
-        
-        # 기본값 선택 (Aria가 있으면 Aria, 없으면 첫 번째)
         default_idx = 0
         for i, v in enumerate(voice_list):
             if "Aria" in v: default_idx = i; break
@@ -140,7 +140,12 @@ def main():
     st.title(t['title'])
     st.caption(t['caption'])
     
-    text_input = st.text_area(t['input_label'], height=150, placeholder="Hello! Try the Premium voices.")
+    # [추가] 파일명 접두어 입력 칸
+    col1, col2 = st.columns([1, 3])
+    with col1:
+        file_prefix = st.text_input(t['prefix_label'], value="1a1")
+    
+    text_input = st.text_area(t['input_label'], height=150, placeholder="A Moose Is Loose by Kana Riley...")
 
     if st.button(t['btn_label'], type="primary", use_container_width=True):
         if not text_input.strip():
@@ -154,13 +159,8 @@ def main():
 
             async def gen():
                 communicate = edge_tts.Communicate(
-                    text_input, 
-                    selected_id, 
-                    rate=rate_str, 
-                    pitch=pitch_str, 
-                    volume=volume_str
+                    text_input, selected_id, rate=rate_str, pitch=pitch_str, volume=volume_str
                 )
-                
                 out_buffer = io.BytesIO()
                 async for chunk in communicate.stream():
                     if chunk["type"] == "audio":
@@ -169,15 +169,31 @@ def main():
 
             try:
                 audio_buffer = run_async(gen())
+                
+                # --- 스마트 파일명 생성 로직 ---
+                # 1. 입력된 텍스트 앞부분 추출
+                snippet = sanitize_filename(text_input)
+                
+                # 2. 카운터 관리 (1a1 -> 1, 1a1 -> 2 ...)
+                # 접두어가 바뀌면 새로 1번부터 시작, 같으면 번호 증가
+                if file_prefix not in st.session_state.file_counters:
+                    st.session_state.file_counters[file_prefix] = 1
+                else:
+                    st.session_state.file_counters[file_prefix] += 1
+                
+                count_num = st.session_state.file_counters[file_prefix]
+                
+                # 3. 최종 파일명 완성: [1a1] (1) A moose is lo.mp3
+                final_filename = f"[{file_prefix}] ({count_num}) {snippet}.mp3"
+                
+                # -----------------------------
+                
                 st.audio(audio_buffer)
                 
-                from datetime import datetime
-                timestamp = datetime.now().strftime("%H%M%S")
-                
                 st.download_button(
-                    label=t['download_label'],
+                    label=f"💾 {t['download_label']} : {final_filename}", # 버튼에도 파일명 표시
                     data=audio_buffer,
-                    file_name=f"Readingtown_{timestamp}.mp3",
+                    file_name=final_filename,
                     mime="audio/mp3",
                     use_container_width=True
                 )
